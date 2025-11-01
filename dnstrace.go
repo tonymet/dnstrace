@@ -156,14 +156,7 @@ func do(ctx context.Context) []*rstats {
 			}()
 
 			var r *dns.Msg
-			m := new(dns.Msg)
-			m.RecursionDesired = *pRecurse
-			m.Question = make([]dns.Question, 1)
-			question := dns.Question{"", qType, dns.ClassINET}
-
-			// create a new lock free rand source for this goroutine
-			rando := rand.New(rand.NewSource(time.Now().Unix()))
-
+			var m dns.Msg
 			var i int64
 			for i = 0; i < *pCount; i++ {
 				for _, q := range questions {
@@ -177,9 +170,8 @@ func do(ctx context.Context) []*rstats {
 					atomic.AddInt64(&count, 1)
 
 					// instead of setting the question, do this manually for lower overhead and lock free access to id
-					question.Name = q
-					m.Id = uint16(rando.Uint32())
-					m.Question[0] = question
+					m.SetQuestion(q, qType)
+					//m.RecursionDesired = *pRecurse
 
 					if co == nil {
 						co, err = dns.DialTimeout(network, srv, dnsTimeout)
@@ -203,7 +195,8 @@ func do(ctx context.Context) []*rstats {
 
 					start := time.Now()
 					co.SetWriteDeadline(start.Add(*pWriteTimeout))
-					if err = co.WriteMsg(m); err != nil {
+
+					if err = co.WriteMsg(&m); err != nil {
 						// error writing
 						atomic.AddInt64(&ecount, 1)
 						if *pIOErrors {
