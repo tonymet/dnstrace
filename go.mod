@@ -1,4 +1,4 @@
-module github.com/redsift/dnstrace
+module github.com/tonymet/dnstrace
 
 go 1.12
 

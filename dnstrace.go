@@ -38,7 +38,7 @@ var (
 	pCount       = pApp.Flag("number", "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).").Short('n').Default("1").Int64()
 	pConcurrency = pApp.Flag("concurrency", "Number of concurrent queries to issue.").Short('c').Default("1").Uint32()
 	pRate        = pApp.Flag("rate-limit", "Apply a global questions / second rate limit.").Short('l').Default("0").Int()
-	pQperConn     = pApp.Flag("query-per-conn", "Queries on a connection before creating a new one. 0: unlimited").Default("0").Int64()
+	pQperConn    = pApp.Flag("query-per-conn", "Queries on a connection before creating a new one. 0: unlimited").Default("0").Int64()
 
 	pExpect = pApp.Flag("expect", "Expect a specific response.").Short('e').Strings()
 
@@ -110,7 +110,7 @@ func do(ctx context.Context) []*rstats {
 	}
 
 	srv := *pServer
-	if strings.Index(srv, ":") == -1 {
+	if !strings.Contains(srv, ":") {
 		srv += ":53"
 	}
 
@@ -170,7 +170,7 @@ func do(ctx context.Context) []*rstats {
 					if ctx.Err() != nil {
 						return
 					}
-					if co!=nil && *pQperConn>0 && i%*pQperConn==0 {
+					if co != nil && *pQperConn > 0 && i%*pQperConn == 0 {
 						co.Close()
 						co = nil
 					}
@@ -291,7 +291,6 @@ func printProgress() {
 	}
 
 	fmt.Println()
-
 
 	errorFprint := color.New(color.FgRed).Fprint
 	successFprint := color.New(color.FgGreen).Fprint
@@ -482,13 +481,11 @@ func main() {
 	// process args
 	color.NoColor = !*pColor
 
-	var rLimit syscall.Rlimit
-
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err == nil {
+	if maxFiles, err := GetMaxOpenFiles(); err == nil {
 		var needed uint64
 		needed = uint64(*pConcurrency) + uint64(fileNoBuffer)
-		if rLimit.Cur < needed {
-			fmt.Fprintf(os.Stderr, "current process limit for number of files is %d and insufficient for level of requested concurrency.\n", rLimit.Cur)
+		if maxFiles < needed {
+			fmt.Fprintf(os.Stderr, "current process limit for number of files is %d and insufficient for level of requested concurrency.\n", maxFiles)
 			os.Exit(2)
 		}
 	}
