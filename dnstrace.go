@@ -225,13 +225,6 @@ func printProgress() {
 }
 
 func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
-	defer func() {
-		if csv != nil {
-			csv.Close()
-		}
-	}()
-
-	// merge all the stats here
 	timings := hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)
 	codeTotals := make(map[int]int64)
 	for s := range stats {
@@ -241,15 +234,12 @@ func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
 		}
 	}
 	testDuration := time.Since(startTime)
-
 	if csv != nil {
 		writeBars(csv, timings.Distribution())
 		fmt.Println()
 		fmt.Println("DNS distribution written to", csv.Name())
 	}
-
 	printProgress()
-
 	if len(codeTotals) > 0 {
 		fmt.Println()
 		fmt.Println("DNS response codes")
@@ -259,11 +249,9 @@ func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
 			}
 		}
 	}
-
 	fmt.Println()
 	fmt.Println("Time taken for tests:\t", testDuration.String())
 	fmt.Printf("Questions per second:\t %0.1f\n", float64(count)/testDuration.Seconds())
-
 	min := time.Duration(timings.Min())
 	mean := time.Duration(timings.Mean())
 	sd := time.Duration(timings.StdDev())
@@ -285,9 +273,7 @@ func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
 
 			printBars(dist)
 		}
-
 	}
-
 }
 
 func writeBars(f *os.File, bars []hdrhistogram.Bar) {
@@ -328,7 +314,6 @@ func makeBar(c int64, max int64) string {
 const fileNoBuffer = 9 // app itself needs about 9 for libs
 
 func main() {
-	// Read build information to automatically get the module version.
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		version = info.Main.Version
 	}
@@ -347,28 +332,26 @@ func main() {
 		}
 	}
 
-	var csv *os.File
+	var (
+		csvFile *os.File
+		err     error
+	)
 	if *pCsv != "" {
-		f, err := os.Create(*pCsv)
+		csvFile, err = os.Create(*pCsv)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err.Error())
 			os.Exit(2)
 		}
-
-		csv = f
+		defer csvFile.Close()
 	}
 
 	sigsInt := make(chan os.Signal, 8)
 	signal.Notify(sigsInt, syscall.SIGINT)
-
 	sigsHup := make(chan os.Signal, 8)
 	signal.Notify(sigsHup, syscall.SIGHUP)
-
 	defer close(sigsInt)
 	defer close(sigsHup)
-
 	ctx, cancel := context.WithTimeout(context.Background(), dnsTimeout)
-
 	go func() {
 		<-sigsInt
 		printProgress()
@@ -384,9 +367,8 @@ func main() {
 	}()
 	start := time.Now()
 	res := do(ctx)
-	printReport(start, res, csv)
+	printReport(start, res, csvFile)
 	if cerror > 0 || ecount > 0 || mismatch > 0 {
-		// something was wrong
 		os.Exit(1)
 	}
 }
