@@ -1,21 +1,28 @@
 module github.com/tonymet/dnstrace
 
-go 1.12
+go 1.24.0
 
 require (
-	github.com/HdrHistogram/hdrhistogram-go v1.1.0
-	github.com/alecthomas/assert v0.0.0-20170929043011-405dbfeb8e38 // indirect
-	github.com/alecthomas/colour v0.1.0 // indirect
-	github.com/alecthomas/kingpin v2.2.5+incompatible
-	github.com/alecthomas/repr v0.0.0-20210611225437-1a2716eca9d6 // indirect
-	github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc // indirect
-	github.com/alecthomas/units v0.0.0-20151022065526-2efee857e7cf // indirect
-	github.com/fatih/color v1.5.0
-	github.com/mattn/go-colorable v0.0.8-0.20170210172801-5411d3eea597 // indirect
-	github.com/mattn/go-isatty v0.0.2-0.20170307163044-57fdcb988a5c // indirect
-	github.com/mattn/go-runewidth v0.0.2 // indirect
-	github.com/miekg/dns v0.0.0-20170812192144-0598bd43cf51
-	github.com/olekukonko/tablewriter v0.0.0-20170719101040-be5337e7b39e
-	github.com/sergi/go-diff v1.2.0 // indirect
-	go.uber.org/ratelimit v0.2.0
+	github.com/HdrHistogram/hdrhistogram-go v1.1.2
+	github.com/miekg/dns v1.1.68
+	github.com/olekukonko/tablewriter v1.1.0
+)
+
+require (
+	github.com/clipperhouse/stringish v0.1.1 // indirect
+	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
+	github.com/fatih/color v1.18.0 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-runewidth v0.0.19 // indirect
+	github.com/olekukonko/cat v0.0.0-20250911104152-50322a0618f6 // indirect
+	github.com/olekukonko/errors v1.1.0 // indirect
+	github.com/olekukonko/ll v0.1.2 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/stretchr/testify v1.9.0 // indirect
+	golang.org/x/mod v0.29.0 // indirect
+	golang.org/x/net v0.46.0 // indirect
+	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sys v0.37.0 // indirect
+	golang.org/x/tools v0.38.0 // indirect
 )

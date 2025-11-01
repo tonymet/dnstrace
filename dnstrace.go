@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -15,55 +15,36 @@ import (
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/alecthomas/kingpin"
-	"github.com/fatih/color"
 	"github.com/miekg/dns"
 	"github.com/olekukonko/tablewriter"
-	"go.uber.org/ratelimit"
 )
 
 var (
-	// Tag is set by build at compile time to Git Tag
-	Tag = ""
-	// Commit is set by build at compile time to Git SHA1
-	Commit = ""
-	author = "Rahul Powar <rahul@redsift.io>"
+	Tag     = ""
+	Commit  = ""
+	version = "dev (no info)"
 )
 
 var (
-	pApp = kingpin.New("dnstrace", "A high QPS DNS benchmark.").Author(author)
+	pServer       = flag.String("s", "127.0.0.1", "DNS server IP:port to test.")
+	pType         = flag.String("type", "A", "Query type. (TXT, A, AAAA)") //TODO: Rest of them pt 1
+	pCount        = flag.Int64("n", 1, "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).")
+	pConcurrency  = flag.Uint("c", 1, "Number of concurrent queries to issue.")
+	pQperConn     = flag.Int64("query-per-conn", 0, "Queries on a connection before creating a new one. 0: unlimited")
+	pExpect       = flag.String("expect", "", "Expect a specific response (comma-separated).")
+	pRecurse      = flag.Bool("recurse", true, "Allow DNS recursion.")
+	pUdpSize      = flag.Uint("edns0", 0, "Enable EDNS0 with specified size.")
+	pTCP          = flag.Bool("tcp", false, "Use TCP fot DNS requests.")
+	pVersion      = flag.Bool("version", false, "Print Version")
+	pWriteTimeout = flag.Duration("write", time.Second, "DNS write timeout.")
+	pReadTimeout  = flag.Duration("read", dnsTimeout, "DNS read timeout.")
+	pHistMin      = flag.Duration("min", (time.Microsecond * 400), "Minimum value for timing histogram.")
+	pHistMax      = flag.Duration("max", dnsTimeout, "Maximum value for histogram.")
+	pHistPre      = flag.Int("precision", 1, "Significant figure for histogram precision. [1-5]")
+	pHistDisplay  = flag.Bool("distribution", true, "Display distribution histogram of timings to stdout.")
+	pCsv          = flag.String("csv", "", "Export distribution to CSV. /path/to/file.csv")
 
-	pServer = pApp.Flag("server", "DNS server IP:port to test.").Short('s').Default("127.0.0.1").String()
-	pType   = pApp.Flag("type", "Query type.").Short('t').Default("A").Enum("TXT", "A", "AAAA") //TODO: Rest of them pt 1
-
-	pCount       = pApp.Flag("number", "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).").Short('n').Default("1").Int64()
-	pConcurrency = pApp.Flag("concurrency", "Number of concurrent queries to issue.").Short('c').Default("1").Uint32()
-	pRate        = pApp.Flag("rate-limit", "Apply a global questions / second rate limit.").Short('l').Default("0").Int()
-	pQperConn    = pApp.Flag("query-per-conn", "Queries on a connection before creating a new one. 0: unlimited").Default("0").Int64()
-
-	pExpect = pApp.Flag("expect", "Expect a specific response.").Short('e').Strings()
-
-	pRecurse = pApp.Flag("recurse", "Allow DNS recursion.").Short('r').Default("false").Bool()
-	pUdpSize = pApp.Flag("edns0", "Enable EDNS0 with specified size.").Default("0").Uint16()
-	pTCP     = pApp.Flag("tcp", "Use TCP fot DNS requests.").Default("false").Bool()
-
-	pWriteTimeout = pApp.Flag("write", "DNS write timeout.").Default("1s").Duration()
-	pReadTimeout  = pApp.Flag("read", "DNS read timeout.").Default(dnsTimeout.String()).Duration()
-
-	pRCodes = pApp.Flag("codes", "Enable counting DNS return codes.").Default("true").Bool()
-
-	pHistMin     = pApp.Flag("min", "Minimum value for timing histogram.").Default((time.Microsecond * 400).String()).Duration()
-	pHistMax     = pApp.Flag("max", "Maximum value for histogram.").Default(dnsTimeout.String()).Duration()
-	pHistPre     = pApp.Flag("precision", "Significant figure for histogram precision.").Default("1").PlaceHolder("[1-5]").Int()
-	pHistDisplay = pApp.Flag("distribution", "Display distribution histogram of timings to stdout.").Default("true").Bool()
-	pCsv         = pApp.Flag("csv", "Export distribution to CSV.").Default("").PlaceHolder("/path/to/file.csv").String()
-
-	pIOErrors = pApp.Flag("io-errors", "Log I/O errors to stderr.").Default("false").Bool()
-
-	pSilent = pApp.Flag("silent", "Disable stdout.").Default("false").Bool()
-	pColor  = pApp.Flag("color", "ANSI Color output.").Default("true").Bool()
-
-	pQueries = pApp.Arg("queries", "Queries to issue.").Required().Strings()
+	pQueries []string
 )
 
 var (
@@ -83,7 +64,7 @@ type rstats struct {
 }
 
 func isExpected(a string) bool {
-	for _, b := range *pExpect {
+	for _, b := range strings.Split(*pExpect, ",") {
 		if b == a {
 			return true
 		}
@@ -91,12 +72,11 @@ func isExpected(a string) bool {
 	return false
 }
 
-func do(ctx context.Context) []*rstats {
-	questions := make([]string, len(*pQueries))
-	for i, q := range *pQueries {
+func do(ctx context.Context) []rstats {
+	questions := make([]string, len(pQueries))
+	for i, q := range pQueries {
 		questions[i] = dns.Fqdn(q)
 	}
-
 	qType := dns.TypeNone
 	switch *pType {
 	//TODO: Rest of them pt 2
@@ -109,129 +89,84 @@ func do(ctx context.Context) []*rstats {
 	default:
 		panic(fmt.Errorf("Unknown type %q", *pType))
 	}
-
 	srv := *pServer
 	if !strings.Contains(srv, ":") {
 		srv += ":53"
 	}
 
-	network := "udp"
+	network := "udp" // Default to UDP
 	if *pTCP {
 		network = "tcp"
 	}
 
-	concurrent := *pConcurrency
-
-	limits := ""
-	var limit ratelimit.Limiter
-	if *pRate > 0 {
-		limit = ratelimit.New(*pRate)
-		limits = fmt.Sprintf("(limited to %d QPS)", *pRate)
-	}
-
-	if !*pSilent {
-		fmt.Printf("Benchmarking %s via %s with %d concurrent requests %s\n\n", srv, network, concurrent, limits)
-
-	}
-
-	stats := make([]*rstats, concurrent)
-
-	var wg sync.WaitGroup
-	var w uint32
-	for w = 0; w < concurrent; w++ {
-		st := &rstats{hist: hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)}
-		stats[w] = st
-		if *pRCodes {
-			st.codes = make(map[int]int64)
+	stats := make([]rstats, 0, *pConcurrency)
+	var (
+		wg sync.WaitGroup
+		w  uint
+	)
+	for w = 0; w < *pConcurrency; w++ {
+		st := rstats{hist: hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)}
+		st.codes = make(map[int]int64)
+		stats = append(stats, st)
+		co, err := dns.DialTimeout(network, srv, dnsTimeout)
+		if err != nil {
+			atomic.AddInt64(&cerror, 1)
+			fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
 		}
-
-		var co *dns.Conn
-		var err error
 		wg.Add(1)
 		go func(st *rstats) {
 			defer func() {
-				if co != nil {
-					co.Close()
-				}
+				co.Close()
 				wg.Done()
 			}()
-
-			var r *dns.Msg
-			var m dns.Msg
-			var i int64
+			var (
+				r *dns.Msg
+				m dns.Msg
+				i int64
+			)
 			for i = 0; i < *pCount; i++ {
 				for _, q := range questions {
 					if ctx.Err() != nil {
 						return
-					}
-					if co != nil && *pQperConn > 0 && i%*pQperConn == 0 {
+					} // Check for context cancellation
+					if *pQperConn > 0 && i%*pQperConn == 0 {
 						co.Close()
-						co = nil
 					}
 					atomic.AddInt64(&count, 1)
-
-					// instead of setting the question, do this manually for lower overhead and lock free access to id
+					if udpSize := uint16(*pUdpSize); udpSize > 0 {
+						m.SetEdns0(udpSize, true)
+						co.UDPSize = udpSize
+					}
 					m.SetQuestion(q, qType)
-					//m.RecursionDesired = *pRecurse
-
-					if co == nil {
-						co, err = dns.DialTimeout(network, srv, dnsTimeout)
-						if err != nil {
-							atomic.AddInt64(&cerror, 1)
-
-							if *pIOErrors {
-								fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
-							}
-							continue
-						}
-						if udpSize := *pUdpSize; udpSize > 0 {
-							m.SetEdns0(udpSize, true)
-							co.UDPSize = udpSize
-						}
-					}
-
-					if limit != nil {
-						limit.Take()
-					}
-
+					m.RecursionDesired = *pRecurse
 					start := time.Now()
-					co.SetWriteDeadline(start.Add(*pWriteTimeout))
-
+					if err := co.SetWriteDeadline(start.Add(*pWriteTimeout)); err != nil {
+						panic(err)
+					}
 					if err = co.WriteMsg(&m); err != nil {
-						// error writing
 						atomic.AddInt64(&ecount, 1)
-						if *pIOErrors {
-							fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
-						}
+						fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
 						co.Close()
 						co = nil
 						continue
 					}
-
 					co.SetReadDeadline(time.Now().Add(*pReadTimeout))
-
 					r, err = co.ReadMsg()
 					if err != nil {
-						// error reading
 						atomic.AddInt64(&ecount, 1)
-						if *pIOErrors {
-							fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
-						}
+						fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
 						co.Close()
 						co = nil
 						continue
 					}
-					timing := time.Now().Sub(start)
-
+					timing := time.Since(start)
 					st.hist.RecordValue(timing.Nanoseconds())
-
 					if r.Rcode == dns.RcodeSuccess {
 						if r.Id != m.Id {
 							atomic.AddInt64(&mismatch, 1)
-							continue
+							continue // Mismatch ID, skip further processing for this response
 						}
 						atomic.AddInt64(&success, 1)
-
 						if expect := *pExpect; len(expect) > 0 {
 							for _, s := range r.Answer {
 								ok := false
@@ -257,41 +192,18 @@ func do(ctx context.Context) []*rstats {
 							}
 						}
 					}
-
-					if st.codes != nil {
-						var c int64
-						if v, ok := st.codes[r.Rcode]; ok {
-							c = v
-						}
-						c++
-						st.codes[r.Rcode] = c
-					}
-
+					st.codes[r.Rcode]++
 				}
 			}
 
-		}(st)
+		}(&st)
 	}
-
 	wg.Wait()
-
 	return stats
 }
 
 func printProgress() {
-
-	if *pSilent {
-		return
-	}
-
-	fmt.Println()
-
-	errorFprint := color.New(color.FgRed).Fprint
-	successFprint := color.New(color.FgGreen).Fprint
-
-	var total uint64
-	total = uint64(*pCount) * uint64(len(*pQueries)) * uint64(*pConcurrency)
-
+	var total = uint64(*pCount) * uint64(len(pQueries)) * uint64(*pConcurrency)
 	acount := atomic.LoadInt64(&count)
 	acerror := atomic.LoadInt64(&cerror)
 	aecount := atomic.LoadInt64(&ecount)
@@ -302,27 +214,23 @@ func printProgress() {
 	fmt.Printf("Total requests:\t %d of %d (%0.1f%%)\n", acount, total, 100.0*float64(acount)/float64(total))
 
 	if acerror > 0 || aecount > 0 {
-		errorFprint(os.Stdout, "Connection errors:\t", acerror, "\n")
-		errorFprint(os.Stdout, "Read/Write errors:\t", aecount, "\n")
+		fmt.Fprint(os.Stdout, "Connection errors:\t", acerror, "\n")
+		fmt.Fprint(os.Stdout, "Read/Write errors:\t", aecount, "\n")
 	}
 
 	if amismatch > 0 {
-		errorFprint(os.Stdout, "ID mismatch errors:\t", amismatch, "\n")
+		fmt.Fprint(os.Stdout, "ID mismatch errors:\t", amismatch, "\n")
 	}
 
-	successFprint(os.Stdout, "DNS success codes:\t", asuccess, "\n")
+	fmt.Fprint(os.Stdout, "DNS success codes:\t", asuccess, "\n")
 
-	if len(*pExpect) > 0 {
-		expect := successFprint
-		if amatched != asuccess {
-			expect = errorFprint
-		}
-		expect(os.Stdout, "Expected results:\t", amatched, "\n")
+	if len(strings.Split(*pExpect, ",")) > 0 {
+		fmt.Fprint(os.Stdout, "Expected results:\t", amatched, "\n")
 	}
 
 }
 
-func printReport(t time.Duration, stats []*rstats, csv *os.File) {
+func printReport(t time.Duration, stats []rstats, csv *os.File) {
 	defer func() {
 		if csv != nil {
 			csv.Close()
@@ -342,38 +250,24 @@ func printReport(t time.Duration, stats []*rstats, csv *os.File) {
 	}
 
 	if csv != nil {
-
 		writeBars(csv, timings.Distribution())
-
 		fmt.Println()
 		fmt.Println("DNS distribution written to", csv.Name())
-	}
-
-	if *pSilent {
-		return
 	}
 
 	printProgress()
 
 	if len(codeTotals) > 0 {
-		errorFprint := color.New(color.FgRed).Fprint
-		successFprint := color.New(color.FgGreen).Fprint
-
 		fmt.Println()
 		fmt.Println("DNS response codes")
 		for i := dns.RcodeSuccess; i <= dns.RcodeBadCookie; i++ {
-			printFn := errorFprint
-			if i == dns.RcodeSuccess {
-				printFn = successFprint
-			}
 			if c, ok := codeTotals[i]; ok {
-				printFn(os.Stdout, "\t", dns.RcodeToString[i]+":\t", c, "\n")
+				fmt.Fprint(os.Stdout, "\t", dns.RcodeToString[i]+":\t", c, "\n")
 			}
 		}
 	}
 
 	fmt.Println()
-
 	fmt.Println("Time taken for tests:\t", t.String())
 	fmt.Printf("Questions per second:\t %0.1f\n", float64(count)/t.Seconds())
 
@@ -443,9 +337,8 @@ func printBars(bars []hdrhistogram.Bar) {
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"Latency", "", "Count"})
-	table.SetBorder(false)
-	table.AppendBulk(lines)
+	table.Header([]string{"Latency", "", "Count"})
+	table.Bulk(lines)
 	table.Render()
 }
 
@@ -460,21 +353,19 @@ func makeBar(c int64, max int64) string {
 const fileNoBuffer = 9 // app itself needs about 9 for libs
 
 func main() {
-	version := "dev (no info)"
 	// Read build information to automatically get the module version.
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		version = info.Main.Version
 	}
-
-	pApp.Version(version)
-	kingpin.MustParse(pApp.Parse(os.Args[1:]))
-
-	// process args
-	color.NoColor = !*pColor
+	flag.Parse()
+	pQueries = flag.Args()
+	if *pVersion {
+		fmt.Printf("Version: %s\n", version)
+		return
+	}
 
 	if maxFiles, err := GetMaxOpenFiles(); err == nil {
-		var needed uint64
-		needed = uint64(*pConcurrency) + uint64(fileNoBuffer)
+		var needed = uint64(*pConcurrency) + uint64(fileNoBuffer)
 		if maxFiles < needed {
 			fmt.Fprintf(os.Stderr, "current process limit for number of files is %d and insufficient for level of requested concurrency.\n", maxFiles)
 			os.Exit(2)
@@ -512,20 +403,14 @@ func main() {
 		os.Exit(130)
 	}()
 	go func() {
-		for _ = range sigsHup {
+		for range sigsHup {
 			printProgress()
 		}
 	}()
-
-	// get going
-	rand.Seed(time.Now().UnixNano())
-
 	start := time.Now()
 	res := do(ctx)
 	end := time.Now()
-
 	printReport(end.Sub(start), res, csv)
-
 	if cerror > 0 || ecount > 0 || mismatch > 0 {
 		// something was wrong
 		os.Exit(1)
