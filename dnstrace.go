@@ -26,22 +26,20 @@ var (
 )
 
 var (
-	pServer       = flag.String("s", "127.0.0.1", "DNS server IP:port to test.")
-	pType         = flag.String("type", "A", "Query type. (TXT, A, AAAA)") //TODO: Rest of them pt 1
-	pCount        = flag.Int64("n", 1, "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).")
-	pConcurrency  = flag.Uint("c", 1, "Number of concurrent queries to issue.")
-	pExpect       = flag.String("expect", "", "Expect a specific response (comma-separated).")
-	pRecurse      = flag.Bool("recurse", true, "Allow DNS recursion.")
-	pUdpSize      = flag.Uint("edns0", 0, "Enable EDNS0 with specified size.")
-	pTCP          = flag.Bool("tcp", false, "Use TCP fot DNS requests.")
-	pVersion      = flag.Bool("version", false, "Print Version")
-	pWriteTimeout = flag.Duration("write", time.Second, "DNS write timeout.")
-	pReadTimeout  = flag.Duration("read", dnsTimeout, "DNS read timeout.")
-	pHistMin      = flag.Duration("min", (time.Microsecond * 400), "Minimum value for timing histogram.")
-	pHistMax      = flag.Duration("max", dnsTimeout, "Maximum value for histogram.")
-	pHistPre      = flag.Int("precision", 1, "Significant figure for histogram precision. [1-5]")
-	pHistDisplay  = flag.Bool("distribution", true, "Display distribution histogram of timings to stdout.")
-	pCsv          = flag.String("csv", "", "Export distribution to CSV. /path/to/file.csv")
+	pServer      = flag.String("s", "127.0.0.1", "DNS server IP:port to test.")
+	pType        = flag.String("type", "A", "Query type. (TXT, A, AAAA)") //TODO: Rest of them pt 1
+	pCount       = flag.Int64("n", 1, "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).")
+	pConcurrency = flag.Uint("c", 1, "Number of concurrent queries to issue.")
+	pExpect      = flag.String("expect", "", "Expect a specific response (comma-separated).")
+	pRecurse     = flag.Bool("recurse", true, "Allow DNS recursion.")
+	pUdpSize     = flag.Uint("edns0", 0, "Enable EDNS0 with specified size.")
+	pNetwork     = flag.String("network", "udp", "tcp OR udp")
+	pVersion     = flag.Bool("version", false, "Print Version")
+	pHistMin     = flag.Duration("min", (time.Microsecond * 400), "Minimum value for timing histogram.")
+	pHistMax     = flag.Duration("max", dnsTimeout, "Maximum value for histogram.")
+	pHistPre     = flag.Int("precision", 1, "Significant figure for histogram precision. [1-5]")
+	pHistDisplay = flag.Bool("distribution", true, "Display distribution histogram of timings to stdout.")
+	pCsv         = flag.String("csv", "", "Export distribution to CSV. /path/to/file.csv")
 
 	pQueries []string
 )
@@ -78,24 +76,13 @@ func do(ctx context.Context) chan rstats {
 		for i, q := range pQueries {
 			questions[i] = dns.Fqdn(q)
 		}
-		qType := dns.TypeNone
-		switch *pType {
-		case "TXT":
-			qType = dns.TypeTXT
-		case "A":
-			qType = dns.TypeA
-		case "AAAA":
-			qType = dns.TypeAAAA
-		default:
+		qType, ok := dns.StringToType[*pType]
+		if !ok {
 			panic(fmt.Errorf("Unknown type %q", *pType))
 		}
 		srv := *pServer
 		if !strings.Contains(srv, ":") {
 			srv += ":53"
-		}
-		network := "udp" // Default to UDP
-		if *pTCP {
-			network = "tcp"
 		}
 		var (
 			wg sync.WaitGroup
@@ -107,7 +94,7 @@ func do(ctx context.Context) chan rstats {
 			close(stats)
 		}()
 		for w = 0; w < *pConcurrency; w++ {
-			co, err := dns.DialTimeout(network, srv, dnsTimeout)
+			co, err := dns.DialTimeout(*pNetwork, srv, dnsTimeout)
 			if err != nil {
 				atomic.AddInt64(&cerror, 1)
 				fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
@@ -125,10 +112,15 @@ func do(ctx context.Context) chan rstats {
 				)
 				for i = 0; i < *pCount; i++ {
 					for _, q := range questions {
+						var deadline time.Time
 						select {
 						case <-ctx.Done():
 							return
 						default:
+							deadline, ok = ctx.Deadline()
+							if !ok {
+								deadline = time.Time{}
+							}
 						}
 						atomic.AddInt64(&count, 1)
 						if udpSize := uint16(*pUdpSize); udpSize > 0 {
@@ -138,7 +130,7 @@ func do(ctx context.Context) chan rstats {
 						m.SetQuestion(q, qType)
 						m.RecursionDesired = *pRecurse
 						start := time.Now()
-						if err := co.SetWriteDeadline(start.Add(*pWriteTimeout)); err != nil {
+						if err := co.SetWriteDeadline(deadline); err != nil {
 							panic(err)
 						}
 						if err = co.WriteMsg(&m); err != nil {
@@ -146,7 +138,7 @@ func do(ctx context.Context) chan rstats {
 							fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
 							continue
 						}
-						_ = co.SetReadDeadline(time.Now().Add(*pReadTimeout))
+						_ = co.SetReadDeadline(deadline)
 						r, err := co.ReadMsg()
 						if err != nil {
 							atomic.AddInt64(&ecount, 1)
