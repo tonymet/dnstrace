@@ -184,3 +184,13 @@ DNS distribution, 100 datapoints
   25.690111ms | ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                            |     4
   26.738687ms | ▄▄▄▄                                        |     1
 ```
+
+
+## Test Server
+```
+ docker run -p 5353:53/udp `
+   -p 5335:53/tcp `
+   -v ${PWD}\unbound.conf:/etc/unbound/unbound.conf  `
+   alpinelinux/unbound
+
+```

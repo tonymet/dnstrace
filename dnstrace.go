@@ -30,7 +30,6 @@ var (
 	pType         = flag.String("type", "A", "Query type. (TXT, A, AAAA)") //TODO: Rest of them pt 1
 	pCount        = flag.Int64("n", 1, "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).")
 	pConcurrency  = flag.Uint("c", 1, "Number of concurrent queries to issue.")
-	pQperConn     = flag.Int64("query-per-conn", 0, "Queries on a connection before creating a new one. 0: unlimited")
 	pExpect       = flag.String("expect", "", "Expect a specific response (comma-separated).")
 	pRecurse      = flag.Bool("recurse", true, "Allow DNS recursion.")
 	pUdpSize      = flag.Uint("edns0", 0, "Enable EDNS0 with specified size.")
@@ -120,7 +119,6 @@ func do(ctx context.Context) []rstats {
 				wg.Done()
 			}()
 			var (
-				r *dns.Msg
 				m dns.Msg
 				i int64
 			)
@@ -130,9 +128,6 @@ func do(ctx context.Context) []rstats {
 					case <-ctx.Done():
 						return
 					default:
-					}
-					if *pQperConn > 0 && i%*pQperConn == 0 {
-						co.Close()
 					}
 					atomic.AddInt64(&count, 1)
 					if udpSize := uint16(*pUdpSize); udpSize > 0 {
@@ -148,17 +143,13 @@ func do(ctx context.Context) []rstats {
 					if err = co.WriteMsg(&m); err != nil {
 						atomic.AddInt64(&ecount, 1)
 						fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
-						co.Close()
-						co = nil
 						continue
 					}
 					co.SetReadDeadline(time.Now().Add(*pReadTimeout))
-					r, err = co.ReadMsg()
+					r, err := co.ReadMsg()
 					if err != nil {
 						atomic.AddInt64(&ecount, 1)
 						fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
-						co.Close()
-						co = nil
 						continue
 					}
 					timing := time.Since(start)
@@ -244,10 +235,8 @@ func printReport(t time.Duration, stats []rstats, csv *os.File) {
 	codeTotals := make(map[int]int64)
 	for _, s := range stats {
 		timings.Merge(s.hist)
-		if s.codes != nil {
-			for k, v := range s.codes {
-				codeTotals[k] = codeTotals[k] + v
-			}
+		for k, v := range s.codes {
+			codeTotals[k] = codeTotals[k] + v
 		}
 	}
 
