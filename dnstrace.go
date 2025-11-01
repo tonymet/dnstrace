@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -459,13 +460,10 @@ func makeBar(c int64, max int64) string {
 const fileNoBuffer = 9 // app itself needs about 9 for libs
 
 func main() {
-	version := "unknown"
-	if Tag == "" {
-		if Commit != "" {
-			version = Commit
-		}
-	} else {
-		version = fmt.Sprintf("%s-%s", Tag, Commit)
+	version := "dev (no info)"
+	// Read build information to automatically get the module version.
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		version = info.Main.Version
 	}
 
 	pApp.Version(version)
