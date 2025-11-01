@@ -41,7 +41,8 @@ var (
 	pHistDisplay = flag.Bool("distribution", true, "Display distribution histogram of timings to stdout.")
 	pCsv         = flag.String("csv", "", "Export distribution to CSV. /path/to/file.csv")
 
-	pQueries []string
+	pQueries             []string
+	expectedAnswerValues AnswerList
 )
 
 var (
@@ -60,19 +61,18 @@ type rstats struct {
 	hist  *hdrhistogram.Histogram
 }
 
-func isExpected(a string) bool {
-	for _, b := range strings.Split(*pExpect, ",") {
-		if b == a {
-			return true
-		}
-	}
-	return false
-}
-
 func do(ctx context.Context) chan rstats {
 	stats := make(chan rstats, *pConcurrency)
+	deadline, _ := ctx.Deadline()
 	go func() {
 		questions := make([]string, len(pQueries))
+		var id uint16 = 0
+		var wg sync.WaitGroup
+		wg.Add(int(*pConcurrency))
+		defer func() {
+			wg.Wait()
+			close(stats)
+		}()
 		for i, q := range pQueries {
 			questions[i] = dns.Fqdn(q)
 		}
@@ -84,17 +84,10 @@ func do(ctx context.Context) chan rstats {
 		if !strings.Contains(srv, ":") {
 			srv += ":53"
 		}
-		var (
-			wg sync.WaitGroup
-			w  uint
-		)
-		wg.Add(int(*pConcurrency))
-		defer func() {
-			wg.Wait()
-			close(stats)
-		}()
-		for w = 0; w < *pConcurrency; w++ {
+		for range *pConcurrency {
 			co, err := dns.DialTimeout(*pNetwork, srv, dnsTimeout)
+			_ = co.SetWriteDeadline(deadline)
+			_ = co.SetReadDeadline(deadline)
 			if err != nil {
 				atomic.AddInt64(&cerror, 1)
 				fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
@@ -106,21 +99,13 @@ func do(ctx context.Context) chan rstats {
 				}()
 				st := rstats{hist: hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)}
 				st.codes = make(map[int]int64)
-				var (
-					m dns.Msg
-					i int64
-				)
-				for i = 0; i < *pCount; i++ {
+				var m dns.Msg
+				for range *pCount {
 					for _, q := range questions {
-						var deadline time.Time
 						select {
 						case <-ctx.Done():
 							return
 						default:
-							deadline, ok = ctx.Deadline()
-							if !ok {
-								deadline = time.Time{}
-							}
 						}
 						atomic.AddInt64(&count, 1)
 						if udpSize := uint16(*pUdpSize); udpSize > 0 {
@@ -130,15 +115,13 @@ func do(ctx context.Context) chan rstats {
 						m.SetQuestion(q, qType)
 						m.RecursionDesired = *pRecurse
 						start := time.Now()
-						if err := co.SetWriteDeadline(deadline); err != nil {
-							panic(err)
-						}
+						m.Id = id
+						id++
 						if err = co.WriteMsg(&m); err != nil {
 							atomic.AddInt64(&ecount, 1)
 							fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
 							continue
 						}
-						_ = co.SetReadDeadline(deadline)
 						r, err := co.ReadMsg()
 						if err != nil {
 							atomic.AddInt64(&ecount, 1)
@@ -150,31 +133,18 @@ func do(ctx context.Context) chan rstats {
 						if r.Rcode == dns.RcodeSuccess {
 							if r.Id != m.Id {
 								atomic.AddInt64(&mismatch, 1)
-								continue // Mismatch ID, skip further processing for this response
+								continue
 							}
 							atomic.AddInt64(&success, 1)
-							if expect := *pExpect; len(expect) > 0 {
-								for _, s := range r.Answer {
-									ok := false
-									switch s.Header().Rrtype {
-									//TODO: Rest of them pt 3
-									case dns.TypeA:
-										a := s.(*dns.A)
-										ok = isExpected(a.A.To4().String())
-
-									case dns.TypeAAAA:
-										a := s.(*dns.AAAA)
-										ok = isExpected(a.AAAA.String())
-
-									case dns.TypeTXT:
-										t := s.(*dns.TXT)
-										ok = isExpected(strings.Join(t.Txt, ""))
-									}
-
-									if ok {
-										atomic.AddInt64(&matched, 1)
-										break
-									}
+							if *pExpect != "" {
+								if len(expectedAnswerValues) != len(r.Answer) {
+									fmt.Fprintf(os.Stdout, "expected answer count %d does not equal actual %d\n", len(expectedAnswerValues), len(r.Answer))
+									continue
+								}
+								ok := expectedAnswerValues.Compare(r.Answer)
+								if ok {
+									atomic.AddInt64(&matched, 1)
+									break
 								}
 							}
 						}
@@ -210,10 +180,9 @@ func printProgress() {
 
 	fmt.Fprint(os.Stdout, "DNS success codes:\t", asuccess, "\n")
 
-	if len(strings.Split(*pExpect, ",")) > 0 {
+	if len(expectedAnswerValues) > 0 {
 		fmt.Fprint(os.Stdout, "Expected results:\t", amatched, "\n")
 	}
-
 }
 
 func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
@@ -314,6 +283,14 @@ func main() {
 	if *pVersion {
 		fmt.Printf("Version: %s\n", version)
 		return
+	}
+
+	if *pExpect != "" {
+		var err error
+		expectedAnswerValues, err = ScanRecords(*pExpect)
+		if err != nil {
+			panic(err)
+		}
 	}
 
 	if maxFiles, err := GetMaxOpenFiles(); err == nil {
