@@ -1,6 +1,6 @@
 # tonymet/DNStrace
 
-⭐Credit to [redsift/dnstrace](/redsift/dnstrace) .  This work is a refactor of his design by reducing deps and resources
+⭐Credit to [redsift/dnstrace](https://github.com/redsift/dnstrace) .  This work is a refactor of his design by reducing deps and resources
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/tonymet/dnstrace)](https://goreportcard.com/report/github.com/tonymet/dnstrace)
 [![Release](https://img.shields.io/github/release/tonymet/dnstrace/all.svg)](https://github.com/tonymet/dnstrace/releases)
@@ -56,10 +56,18 @@ Args:
 
 ## Installation
 
-### go get
+### Install
 
-`go get github.com/tonymet/dnstrace` will install the binary in your `$GOPATH/bin`.
-On OS-X, the native binary will outperform the Docker container below running under HyperKit significantly e.g. 30% more throughput, 30% lower latency and a 4x decrease in timing spread
+## With Go
+`go install github.com/tonymet/dnstrace@latest` will install the binary in your `$GOPATH/bin`.
+
+## From Binary Release
+```
+curl -LO https://github.com/tonymet/dnstrace/releases/download/v0.2.9/dnstrace_0.2.9_windows_amd64.tar.gz
+tar -zxf *tar.gz
+sudo install dnstrace /usr/local/bin
+```
+
 
 ### Docker
 
