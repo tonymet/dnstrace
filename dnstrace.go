@@ -297,11 +297,9 @@ func writeBars(f *os.File, bars []hdrhistogram.Bar) {
 }
 
 func printBars(bars []hdrhistogram.Bar) {
-
 	counts := make([]int64, 0, len(bars))
 	lines := make([][]string, 0, len(bars))
 	var max int64
-
 	for _, b := range bars {
 		if b.Count == 0 {
 			continue
@@ -309,23 +307,17 @@ func printBars(bars []hdrhistogram.Bar) {
 		if b.Count > max {
 			max = b.Count
 		}
-		line := make([]string, 3)
+		line := make([]string, 2)
 		lines = append(lines, line)
 		counts = append(counts, b.Count)
-
 		line[0] = time.Duration(b.To/2 + b.From/2).Round(time.Microsecond).String()
-		line[2] = strconv.FormatInt(b.Count, 10)
-
+		line[1] = strconv.FormatInt(b.Count, 10)
 	}
-
-	for i, l := range lines {
-		l[1] = makeBar(counts[i], max)
-	}
-
 	w := tabwriter.NewWriter(os.Stdout, 1, 1, 3, ' ', 0)
-	fmt.Fprintln(w, "Latency\t\tCount")
-	for _, l := range lines {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", l[0], l[1], l[2])
+	fmt.Fprintln(w, "Latency\tSize\tCount")
+	fmt.Fprintln(w, "---\t-----\t---")
+	for i, l := range lines {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", l[0], makeBar(counts[i], max), l[1])
 	}
 	w.Flush()
 }
