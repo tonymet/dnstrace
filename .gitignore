@@ -31,3 +31,4 @@ vendor/
 .idea/
 dnstrace
 *.log
+dist

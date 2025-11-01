@@ -1,0 +1,11 @@
+builds:
+  - id: dnstrace
+    main: ./ # Path to your main package
+    binary: dnstrace
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64

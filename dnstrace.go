@@ -126,9 +126,11 @@ func do(ctx context.Context) []rstats {
 			)
 			for i = 0; i < *pCount; i++ {
 				for _, q := range questions {
-					if ctx.Err() != nil {
+					select {
+					case <-ctx.Done():
 						return
-					} // Check for context cancellation
+					default:
+					}
 					if *pQperConn > 0 && i%*pQperConn == 0 {
 						co.Close()
 					}
@@ -309,25 +311,20 @@ func printBars(bars []hdrhistogram.Bar) {
 
 	counts := make([]int64, 0, len(bars))
 	lines := make([][]string, 0, len(bars))
-	added := false
 	var max int64
 
 	for _, b := range bars {
-		if b.Count == 0 && !added {
-			// trim the start
+		if b.Count == 0 {
 			continue
 		}
 		if b.Count > max {
 			max = b.Count
 		}
-
-		added = true
-
 		line := make([]string, 3)
 		lines = append(lines, line)
 		counts = append(counts, b.Count)
 
-		line[0] = time.Duration(b.To/2 + b.From/2).String()
+		line[0] = time.Duration(b.To/2 + b.From/2).Round(time.Microsecond).String()
 		line[2] = strconv.FormatInt(b.Count, 10)
 
 	}
@@ -392,7 +389,7 @@ func main() {
 	defer close(sigsInt)
 	defer close(sigsHup)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), dnsTimeout)
 
 	go func() {
 		<-sigsInt
