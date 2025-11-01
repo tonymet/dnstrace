@@ -71,14 +71,13 @@ func isExpected(a string) bool {
 	return false
 }
 
-func do(ctx context.Context) []rstats {
+func do(ctx context.Context) chan rstats {
 	questions := make([]string, len(pQueries))
 	for i, q := range pQueries {
 		questions[i] = dns.Fqdn(q)
 	}
 	qType := dns.TypeNone
 	switch *pType {
-	//TODO: Rest of them pt 2
 	case "TXT":
 		qType = dns.TypeTXT
 	case "A":
@@ -92,27 +91,28 @@ func do(ctx context.Context) []rstats {
 	if !strings.Contains(srv, ":") {
 		srv += ":53"
 	}
-
 	network := "udp" // Default to UDP
 	if *pTCP {
 		network = "tcp"
 	}
-
-	stats := make([]rstats, 0, *pConcurrency)
+	stats := make(chan rstats, *pConcurrency)
 	var (
 		wg sync.WaitGroup
 		w  uint
 	)
+	wg.Add(int(*pConcurrency))
+	go func() {
+		wg.Wait()
+		close(stats)
+	}()
 	for w = 0; w < *pConcurrency; w++ {
 		st := rstats{hist: hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)}
 		st.codes = make(map[int]int64)
-		stats = append(stats, st)
 		co, err := dns.DialTimeout(network, srv, dnsTimeout)
 		if err != nil {
 			atomic.AddInt64(&cerror, 1)
 			fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
 		}
-		wg.Add(1)
 		go func(st *rstats) {
 			defer func() {
 				co.Close()
@@ -145,7 +145,7 @@ func do(ctx context.Context) []rstats {
 						fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
 						continue
 					}
-					co.SetReadDeadline(time.Now().Add(*pReadTimeout))
+					_ = co.SetReadDeadline(time.Now().Add(*pReadTimeout))
 					r, err := co.ReadMsg()
 					if err != nil {
 						atomic.AddInt64(&ecount, 1)
@@ -153,7 +153,7 @@ func do(ctx context.Context) []rstats {
 						continue
 					}
 					timing := time.Since(start)
-					st.hist.RecordValue(timing.Nanoseconds())
+					_ = st.hist.RecordValue(timing.Nanoseconds())
 					if r.Rcode == dns.RcodeSuccess {
 						if r.Id != m.Id {
 							atomic.AddInt64(&mismatch, 1)
@@ -188,10 +188,10 @@ func do(ctx context.Context) []rstats {
 					st.codes[r.Rcode]++
 				}
 			}
+			stats <- *st
 
 		}(&st)
 	}
-	wg.Wait()
 	return stats
 }
 
@@ -223,7 +223,7 @@ func printProgress() {
 
 }
 
-func printReport(t time.Duration, stats []rstats, csv *os.File) {
+func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
 	defer func() {
 		if csv != nil {
 			csv.Close()
@@ -233,12 +233,13 @@ func printReport(t time.Duration, stats []rstats, csv *os.File) {
 	// merge all the stats here
 	timings := hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)
 	codeTotals := make(map[int]int64)
-	for _, s := range stats {
+	for s := range stats {
 		timings.Merge(s.hist)
 		for k, v := range s.codes {
 			codeTotals[k] = codeTotals[k] + v
 		}
 	}
+	testDuration := time.Since(startTime)
 
 	if csv != nil {
 		writeBars(csv, timings.Distribution())
@@ -259,8 +260,8 @@ func printReport(t time.Duration, stats []rstats, csv *os.File) {
 	}
 
 	fmt.Println()
-	fmt.Println("Time taken for tests:\t", t.String())
-	fmt.Printf("Questions per second:\t %0.1f\n", float64(count)/t.Seconds())
+	fmt.Println("Time taken for tests:\t", testDuration.String())
+	fmt.Printf("Questions per second:\t %0.1f\n", float64(count)/testDuration.Seconds())
 
 	min := time.Duration(timings.Min())
 	mean := time.Duration(timings.Mean())
@@ -289,10 +290,9 @@ func printReport(t time.Duration, stats []rstats, csv *os.File) {
 }
 
 func writeBars(f *os.File, bars []hdrhistogram.Bar) {
-	f.WriteString("From (ns), To (ns), Count\n")
-
+	_, _ = f.WriteString("From (ns), To (ns), Count\n")
 	for _, b := range bars {
-		f.WriteString(b.String())
+		_, _ = f.WriteString(b.String())
 	}
 }
 
@@ -324,8 +324,8 @@ func printBars(bars []hdrhistogram.Bar) {
 
 	table := tablewriter.NewWriter(os.Stdout)
 	table.Header([]string{"Latency", "", "Count"})
-	table.Bulk(lines)
-	table.Render()
+	_ = table.Bulk(lines)
+	_ = table.Render()
 }
 
 func makeBar(c int64, max int64) string {
@@ -395,8 +395,7 @@ func main() {
 	}()
 	start := time.Now()
 	res := do(ctx)
-	end := time.Now()
-	printReport(end.Sub(start), res, csv)
+	printReport(start, res, csv)
 	if cerror > 0 || ecount > 0 || mismatch > 0 {
 		// something was wrong
 		os.Exit(1)
