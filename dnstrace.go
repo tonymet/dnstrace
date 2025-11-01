@@ -12,11 +12,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/miekg/dns"
-	"github.com/olekukonko/tablewriter"
 )
 
 var (
@@ -322,10 +322,12 @@ func printBars(bars []hdrhistogram.Bar) {
 		l[1] = makeBar(counts[i], max)
 	}
 
-	table := tablewriter.NewWriter(os.Stdout)
-	table.Header([]string{"Latency", "", "Count"})
-	_ = table.Bulk(lines)
-	_ = table.Render()
+	w := tabwriter.NewWriter(os.Stdout, 1, 1, 3, ' ', 0)
+	fmt.Fprintln(w, "Latency\t\tCount")
+	for _, l := range lines {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", l[0], l[1], l[2])
+	}
+	w.Flush()
 }
 
 func makeBar(c int64, max int64) string {
