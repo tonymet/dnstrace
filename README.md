@@ -1,100 +1,76 @@
-# DNStrace
+# tonymet/DNStrace
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/redsift/dnstrace)](https://goreportcard.com/report/github.com/redsift/dnstrace)
-[![Release](https://img.shields.io/github/release/redsift/dnstrace/all.svg)](https://github.com/redsift/dnstrace/releases)
-[![CircleCI](https://circleci.com/gh/redsift/dnstrace.svg?style=shield)](https://circleci.com/gh/redsift/dnstrace)
-[![Docker Image](https://images.microbadger.com/badges/image/redsift/dnstrace.svg)](https://microbadger.com/images/redsift/dnstrace)
+⭐Credit to [redsift/dnstrace](/redsift/dnstrace) .  This work is a refactor of his design by reducing deps and resources
 
-Command-line DNS benchmark tool built to stress test and measure the performance of DNS servers with commodity hardware.
-This tool typically consumes ~30kB per concurrent connection and can maintain ~30,000 QPS per modern core if your server, OS and network allows you to reach suitable levels of concurrency.
+[![Go Report Card](https://goreportcard.com/badge/github.com/tonymet/dnstrace)](https://goreportcard.com/report/github.com/tonymet/dnstrace)
+[![Release](https://img.shields.io/github/release/tonymet/dnstrace/all.svg)](https://github.com/tonymet/dnstrace/releases)
+[![Build Status](https://github.com/tonymet/dnstrace/workflows/Release/badge.svg)](https://github.com/tonymet/dnstrace/actions)
 
 DNStrace bypasses OS resolvers and is provided as a Docker packaged prebuilt static binary.
 Basic latency measurement, result checking and histograms are supported.
 Currently, only `A`, `AAAA` and `TXT` questions are supported.
+Do not use on public DNS servers
 
 ## Usage
 
 ```
-$ dnstrace --help
-
+$ dnstrace -h
 usage: dnstrace [<flags>] <queries>...
-
 A DNS benchmark.
-
-Flags:
-      --help                   Show context-sensitive help (also try --help-long
-                               and --help-man).
-  -s, --server="127.0.0.1"     DNS server IP:port to test.
-  -t, --type=A                 Query type.
-  -n, --number=1               Number of queries to issue. Note that the total
-                               number of queries issued =
-                               number*concurrency*len(queries).
-  -c, --concurrency=1          Number of concurrent queries to issue.
-  -l, --rate-limit=0           Apply a global questions / second rate limit.
-  -e, --expect=EXPECT ...      Expect a specific response.
-  -r, --recurse                Allow DNS recursion.
-      --edns0=0                Enable EDNS0 with specified size.
-      --tcp                    Use TCP fot DNS requests.
-      --write=1s               DNS write timeout.
-      --read=4s                DNS read timeout.
-      --codes                  Enable counting DNS return codes.
-      --min=400µs              Minimum value for timing histogram.
-      --max=4s                 Maximum value for histogram.
-      --precision=[1-5]        Significant figure for histogram precision.
-      --distribution           Display distribution histogram of timings to
-                               stdout.
-      --csv=/path/to/file.csv  Export distribution to CSV.
-      --io-errors              Log I/O errors to stderr.
-      --silent                 Disable stdout.
-      --color                  ANSI Color output.
-      --version                Show application version.
+ -c uint
+        Number of concurrent queries to issue. (default 1)
+  -csv string
+        Export distribution to CSV. /path/to/file.csv
+  -distribution
+        Display distribution histogram of timings to stdout. (default true)
+  -edns0 uint
+        Enable EDNS0 with specified size.
+  -expect string
+        Expect a specific response (comma-separated).
+  -max duration
+        Maximum value for histogram. (default 4s)
+  -min duration
+        Minimum value for timing histogram. (default 400µs)
+  -n int
+        Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries). (default 1)
+  -precision int
+        Significant figure for histogram precision. [1-5] (default 1)
+  -read duration
+        DNS read timeout. (default 4s)
+  -recurse
+        Allow DNS recursion. (default true)
+  -s string
+        DNS server IP:port to test. (default "127.0.0.1")
+  -tcp
+        Use TCP fot DNS requests.
+  -type string
+        Query type. (TXT, A, AAAA) (default "A")
+  -version
+        Print Version
+  -write duration
+        DNS write timeout. (default 1s)
 
 Args:
   <queries>  Queries to issue.
 ```
 
-## Warning
-
-While `dnstrace` is helpful for testing round trip latency via public networks,
-the code was primarily created to provide an [apachebench](https://en.wikipedia.org/wiki/ApacheBench)
-style tool for testing your own infrastructure.
-
-It is thus very easy to create significant DNS load with non default settings.
-**Do not do this to public DNS services**. You will most likely flag your IP.
-
 ## Installation
 
 ### go get
 
-`go get github.com/redsift/dnstrace` will install the binary in your `$GOPATH/bin`.
+`go get github.com/tonymet/dnstrace` will install the binary in your `$GOPATH/bin`.
 On OS-X, the native binary will outperform the Docker container below running under HyperKit significantly e.g. 30% more throughput, 30% lower latency and a 4x decrease in timing spread
 
 ### Docker
 
-[![Latest](https://images.microbadger.com/badges/version/redsift/dnstrace.svg)](https://microbadger.com/images/redsift/dnstrace)
+[![Latest](https://images.microbadger.com/badges/version/tonymet/dnstrace.svg)](https://microbadger.com/images/tonymet/dnstrace)
 
 This tool is available in a prebuilt image.
 
-`docker run redsift/dnstrace --help`
+`docker run tonymet/dnstrace --help`
 
 If your local test setup lets you reach 50k QPS and above, you can expect the docker networking to add ~2% overhead to throughput and ~8% to mean latency (tested on Linux Docker 1.12.3).
 If this is significant for your purposes you may wish to run with `--net=host`
-
-## Bash/ZSH Shell Completion
-
-`./dnstrace --completion-script-bash` and `./dnstrace --completion-script-zsh` will create shell completion scripts.
-
-e.g.
-```
-$ eval "$(./dnstrace --completion-script-zsh)"
-
-$ ./dnstrace --concurrency
-  --codes         --distribution  --io-errors     --precision     --server        --version
-  --color         --edns0         --max           --rate-limit    --silent        --write
-  --concurrency   --expect        --min           --read          --tcp
-  --csv           --help          --number        --recurse       --type
-
-```
 
 ## C10K and the like
 
@@ -114,7 +90,7 @@ For long runs, the user can send a SIGHUP via `kill -1 pid` to get the current p
 ## Example
 
 ```
-$ docker run redsift/dnstrace -n 10 -c 10 --server 8.8.8.8 --recurse redsift.io
+$ docker run tonymet/dnstrace -n 10 -c 10 --server 8.8.8.8 --recurse tonymet.io
 
 Benchmarking 8.8.8.8:53 via udp with 10 conncurrent requests
 
@@ -184,7 +160,6 @@ DNS distribution, 100 datapoints
   25.690111ms | ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                            |     4
   26.738687ms | ▄▄▄▄                                        |     1
 ```
-
 
 ## Test Server
 ```
