@@ -77,12 +77,12 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 func Test_do(t *testing.T) {
 	tests := []struct {
 		name         string // description of this test case
-		wantCount    int
+		wantCount    int64
 		pCount       int64
 		pConcurrency uint
 		query        string
 	}{
-		{"www.ucla.edu", 4, 5, 4, "www.ucla.edu"},
+		{"www.ucla.edu", 20, 5, 4, "www.ucla.edu"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,8 +90,8 @@ func Test_do(t *testing.T) {
 			pConcurrency = &tt.pConcurrency
 			*pServer = serverAddr
 			pQueries = []string{tt.query}
-			rChan := do(context.Background())
-			got := countResults(rChan)
+			do(context.Background())
+			got := countResults()
 			if tt.wantCount != got {
 				t.Errorf("got = %v, want %v", got, tt.wantCount)
 			}
@@ -99,10 +99,28 @@ func Test_do(t *testing.T) {
 	}
 }
 
-func countResults(rChan chan rstats) int {
-	count := 0
-	for range rChan {
-		count++
+func Benchmark_do(b *testing.B) {
+	tests := []struct {
+		name         string // description of this test case
+		pCount       int64
+		pConcurrency uint
+		query        string
+	}{
+		{"www.ucla.edu", 5, 4, "www.ucla.edu"},
 	}
-	return count
+	tt := tests[0]
+	for range b.N {
+		pCount = &tt.pCount
+		pConcurrency = &tt.pConcurrency
+		*pServer = serverAddr
+		pQueries = []string{tt.query}
+		do(context.Background())
+	}
+}
+
+func countResults() (c int64) {
+	for _, v := range allStats.codes {
+		c += v
+	}
+	return
 }

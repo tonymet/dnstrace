@@ -32,3 +32,4 @@ vendor/
 dnstrace
 *.log
 dist
+*.pprof

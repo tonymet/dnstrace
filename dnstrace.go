@@ -43,6 +43,7 @@ var (
 
 	pQueries             []string
 	expectedAnswerValues AnswerList
+	allStats             rstats
 )
 
 var (
@@ -59,103 +60,108 @@ const dnsTimeout = time.Second * 4
 type rstats struct {
 	codes map[int]int64
 	hist  *hdrhistogram.Histogram
+	sync.Mutex
 }
 
-func do(ctx context.Context) chan rstats {
-	stats := make(chan rstats, *pConcurrency)
+func init() {
+	allStats.codes = make(map[int]int64)
+	allStats.hist = hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Microseconds(), *pHistPre)
+}
+
+func do(ctx context.Context) {
 	deadline, _ := ctx.Deadline()
-	go func() {
-		questions := make([]string, len(pQueries))
-		var id uint16 = 0
-		var wg sync.WaitGroup
-		wg.Add(int(*pConcurrency))
-		defer func() {
-			wg.Wait()
-			close(stats)
-		}()
-		for i, q := range pQueries {
-			questions[i] = dns.Fqdn(q)
+	questions := make([]dns.Question, len(pQueries))
+	var (
+		wg sync.WaitGroup
+		id uint16
+	)
+	wg.Add(int(*pConcurrency))
+	defer func() {
+		wg.Wait()
+	}()
+	qType, ok := dns.StringToType[*pType]
+	if !ok {
+		panic(fmt.Errorf("Unknown type %q", *pType))
+	}
+	for i, q := range pQueries {
+		questions[i] = dns.Question{Name: dns.Fqdn(q), Qtype: qType, Qclass: dns.ClassINET}
+	}
+	srv := *pServer
+	if !strings.Contains(srv, ":") {
+		srv += ":53"
+	}
+	var m dns.Msg
+	m.Question = make([]dns.Question, 1)
+	m.RecursionDesired = *pRecurse
+	for range *pConcurrency {
+		co, err := dns.DialTimeout(*pNetwork, srv, dnsTimeout)
+		_ = co.SetWriteDeadline(deadline)
+		_ = co.SetReadDeadline(deadline)
+		if err != nil {
+			atomic.AddInt64(&cerror, 1)
+			fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
 		}
-		qType, ok := dns.StringToType[*pType]
-		if !ok {
-			panic(fmt.Errorf("Unknown type %q", *pType))
-		}
-		srv := *pServer
-		if !strings.Contains(srv, ":") {
-			srv += ":53"
-		}
-		for range *pConcurrency {
-			co, err := dns.DialTimeout(*pNetwork, srv, dnsTimeout)
-			_ = co.SetWriteDeadline(deadline)
-			_ = co.SetReadDeadline(deadline)
-			if err != nil {
-				atomic.AddInt64(&cerror, 1)
-				fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
+		go func() {
+			defer func() {
+				co.Close()
+				wg.Done()
+			}()
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-			go func() {
-				defer func() {
-					co.Close()
-					wg.Done()
-				}()
-				st := rstats{hist: hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)}
-				st.codes = make(map[int]int64)
-				var m dns.Msg
+			if udpSize := uint16(*pUdpSize); udpSize > 0 {
+				m.SetEdns0(udpSize, true)
+				co.UDPSize = udpSize
+			}
+			for _, q := range questions {
+				m.Question[0] = q
 				for range *pCount {
-					for _, q := range questions {
-						select {
-						case <-ctx.Done():
-							return
-						default:
-						}
-						atomic.AddInt64(&count, 1)
-						if udpSize := uint16(*pUdpSize); udpSize > 0 {
-							m.SetEdns0(udpSize, true)
-							co.UDPSize = udpSize
-						}
-						m.SetQuestion(q, qType)
-						m.RecursionDesired = *pRecurse
-						start := time.Now()
-						m.Id = id
-						id++
-						if err = co.WriteMsg(&m); err != nil {
-							atomic.AddInt64(&ecount, 1)
-							fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
+					atomic.AddInt64(&count, 1)
+					m.Id = id
+					id++
+					start := time.Now()
+					if err = co.WriteMsg(&m); err != nil {
+						atomic.AddInt64(&ecount, 1)
+						fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
+						continue
+					}
+					r, err := co.ReadMsg()
+					if err != nil {
+						atomic.AddInt64(&ecount, 1)
+						fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
+						continue
+					}
+					timing := time.Since(start)
+					allStats.Lock()
+					_ = allStats.hist.RecordValue(timing.Nanoseconds())
+					allStats.Unlock()
+					if r.Rcode == dns.RcodeSuccess {
+						if r.Id != m.Id {
+							atomic.AddInt64(&mismatch, 1)
 							continue
 						}
-						r, err := co.ReadMsg()
-						if err != nil {
-							atomic.AddInt64(&ecount, 1)
-							fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
-							continue
-						}
-						timing := time.Since(start)
-						_ = st.hist.RecordValue(timing.Nanoseconds())
-						if r.Rcode == dns.RcodeSuccess {
-							if r.Id != m.Id {
-								atomic.AddInt64(&mismatch, 1)
+						atomic.AddInt64(&success, 1)
+						if *pExpect != "" {
+							if len(expectedAnswerValues) != len(r.Answer) {
+								fmt.Fprintf(os.Stdout, "expected answer count %d does not equal actual %d\n", len(expectedAnswerValues), len(r.Answer))
 								continue
 							}
-							atomic.AddInt64(&success, 1)
-							if *pExpect != "" {
-								if len(expectedAnswerValues) != len(r.Answer) {
-									fmt.Fprintf(os.Stdout, "expected answer count %d does not equal actual %d\n", len(expectedAnswerValues), len(r.Answer))
-									continue
-								}
-								ok := expectedAnswerValues.Compare(r.Answer)
-								if ok {
-									atomic.AddInt64(&matched, 1)
-									break
-								}
+							ok := expectedAnswerValues.Compare(r.Answer)
+							if ok {
+								atomic.AddInt64(&matched, 1)
+								break
 							}
 						}
-						st.codes[r.Rcode]++
 					}
+					allStats.Lock()
+					allStats.codes[r.Rcode]++
+					allStats.Unlock()
 				}
-				stats <- st
-			}()
-		}
-	}()
-	return stats
+			}
+		}()
+	}
 }
 
 func printProgress() {
@@ -185,27 +191,18 @@ func printProgress() {
 	}
 }
 
-func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
-	timings := hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Nanoseconds(), *pHistPre)
-	codeTotals := make(map[int]int64)
-	for s := range stats {
-		timings.Merge(s.hist)
-		for k, v := range s.codes {
-			codeTotals[k] = codeTotals[k] + v
-		}
-	}
-	testDuration := time.Since(startTime)
+func printReport(testDuration time.Duration, csv *os.File) {
 	if csv != nil {
-		writeBars(csv, timings.Distribution())
+		writeBars(csv, allStats.hist.Distribution())
 		fmt.Println()
 		fmt.Println("DNS distribution written to", csv.Name())
 	}
 	printProgress()
-	if len(codeTotals) > 0 {
+	if len(allStats.codes) > 0 {
 		fmt.Println()
 		fmt.Println("DNS response codes")
 		for i := dns.RcodeSuccess; i <= dns.RcodeBadCookie; i++ {
-			if c, ok := codeTotals[i]; ok {
+			if c, ok := allStats.codes[i]; ok {
 				fmt.Fprint(os.Stdout, "\t", dns.RcodeToString[i]+":\t", c, "\n")
 			}
 		}
@@ -213,12 +210,12 @@ func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
 	fmt.Println()
 	fmt.Println("Time taken for tests:\t", testDuration.String())
 	fmt.Printf("Questions per second:\t %0.1f\n", float64(count)/testDuration.Seconds())
-	min := time.Duration(timings.Min())
-	mean := time.Duration(timings.Mean())
-	sd := time.Duration(timings.StdDev())
-	max := time.Duration(timings.Max())
+	min := time.Duration(allStats.hist.Min())
+	mean := time.Duration(allStats.hist.Mean())
+	sd := time.Duration(allStats.hist.StdDev())
+	max := time.Duration(allStats.hist.Max())
 
-	if tc := timings.TotalCount(); tc > 0 {
+	if tc := allStats.hist.TotalCount(); tc > 0 {
 		fmt.Println()
 		fmt.Println("DNS timings,", tc, "datapoints")
 		fmt.Println("\t min:\t\t", min)
@@ -226,7 +223,7 @@ func printReport(startTime time.Time, stats chan rstats, csv *os.File) {
 		fmt.Println("\t [+/-sd]:\t", sd)
 		fmt.Println("\t max:\t\t", max)
 
-		dist := timings.Distribution()
+		dist := allStats.hist.Distribution()
 		if *pHistDisplay && tc > 1 {
 
 			fmt.Println()
@@ -335,8 +332,9 @@ func main() {
 		}
 	}()
 	start := time.Now()
-	res := do(ctx)
-	printReport(start, res, csvFile)
+	do(ctx)
+	testDuration := time.Since(start)
+	printReport(testDuration, csvFile)
 	if cerror > 0 || ecount > 0 || mismatch > 0 {
 		os.Exit(1)
 	}
