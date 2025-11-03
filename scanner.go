@@ -7,7 +7,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/miekg/dns"
+	"codeberg.org/miekg/dns"
 )
 
 // ExpectedAnswer represents a single type:address entry.
@@ -84,7 +84,7 @@ func (want AnswerList) Compare(have []dns.RR) (ok bool) {
 	}
 	for j, s := range have {
 		expect := want[j]
-		switch s.Header().Rrtype {
+		switch dns.RRToType(s) {
 		case dns.TypeA:
 			ok = s.(*dns.A).A.Equal(expect.NetAddr)
 			if !ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -15,8 +16,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"codeberg.org/miekg/dns"
 	"github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/miekg/dns"
 )
 
 var (
@@ -31,8 +32,8 @@ var (
 	pCount       = flag.Int64("n", 1, "Number of queries to issue. Note that the total number of queries issued = number*concurrency*len(queries).")
 	pConcurrency = flag.Uint("c", 1, "Number of concurrent queries to issue.")
 	pExpect      = flag.String("expect", "", "Expect a specific response (comma-separated).")
-	pRecurse     = flag.Bool("recurse", true, "Allow DNS recursion.")
-	pNetwork     = flag.String("network", "udp", "tcp OR udp")
+	// pRecurse     = flag.Bool("recurse", true, "Allow DNS recursion.")
+	// pNetwork     = flag.String("network", "udp", "tcp OR udp")
 	pVersion     = flag.Bool("version", false, "Print Version")
 	pHistMin     = flag.Duration("min", (time.Microsecond * 400), "Minimum value for timing histogram.")
 	pHistMax     = flag.Duration("max", dnsTimeout, "Maximum value for histogram.")
@@ -43,6 +44,15 @@ var (
 	pQueries             []string
 	expectedAnswerValues AnswerList
 	allStats             rstats
+
+	defaultTransport = dns.Transport{
+		Dialer: &net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 3 * time.Second,
+		},
+		ReadTimeout:  20 * time.Second,
+		WriteTimeout: 20 * time.Second,
+	}
 )
 
 var (
@@ -56,20 +66,19 @@ var (
 
 const dnsTimeout = time.Second * 4
 
+type codeType = map[uint16]int64
 type rstats struct {
-	codes map[int]int64
+	codes codeType
 	hist  *hdrhistogram.Histogram
 	sync.Mutex
 }
 
 func init() {
-	allStats.codes = make(map[int]int64)
+	allStats.codes = make(codeType)
 	allStats.hist = hdrhistogram.New(pHistMin.Nanoseconds(), pHistMax.Microseconds(), *pHistPre)
 }
 
 func do(ctx context.Context) {
-	deadline, _ := ctx.Deadline()
-	questions := make([]dns.Question, len(pQueries))
 	var (
 		wg sync.WaitGroup
 	)
@@ -81,24 +90,20 @@ func do(ctx context.Context) {
 	if !ok {
 		panic(fmt.Errorf("Unknown type %q", *pType))
 	}
-	for i, q := range pQueries {
-		questions[i] = dns.Question{Name: dns.Fqdn(q), Qtype: qType, Qclass: dns.ClassINET}
-	}
 	srv := *pServer
 	if !strings.Contains(srv, ":") {
 		srv += ":53"
 	}
 	for range *pConcurrency {
-		co, err := dns.DialTimeout(*pNetwork, srv, dnsTimeout)
-		_ = co.SetWriteDeadline(deadline)
-		_ = co.SetReadDeadline(deadline)
+		co := dns.NewClient()
+		//co.Transport = &defaultTransport
+		conn, err := net.Dial("udp", srv)
 		if err != nil {
-			atomic.AddInt64(&cerror, 1)
-			fmt.Fprintln(os.Stderr, "i/o error dialing: ", err.Error())
+			fmt.Fprintf(os.Stderr, "error dialing server %s\n", srv)
+			return
 		}
 		go func() {
 			defer func() {
-				co.Close()
 				wg.Done()
 			}()
 			select {
@@ -106,29 +111,32 @@ func do(ctx context.Context) {
 				return
 			default:
 			}
-			for _, q := range questions {
-				var m dns.Msg
-				m.SetQuestion(q.Name, qType)
+			for _, q := range pQueries {
+				m := dns.NewMsg(q, qType)
+				// m.RecursionDesired = true
+				// m.Question = []dns.RR{&dns.A{Hdr: dns.Header{Name: q + ".", Class: qType}}}
 				for range *pCount {
+					var (
+						r   *dns.Msg
+						rtt time.Duration
+						err error
+					)
 					atomic.AddInt64(&count, 1)
-					start := time.Now()
-					if err = co.WriteMsg(&m); err != nil {
-						atomic.AddInt64(&ecount, 1)
-						fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
-						continue
-					}
-					r, err := co.ReadMsg()
-					if err != nil {
+					if r, rtt, err = co.ExchangeWithConn(ctx, m, conn); err != nil {
+
+						// if err == dns.Err
+						// atomic.AddInt64(&ecount, 1)
+						// fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
+						// continue
 						atomic.AddInt64(&ecount, 1)
 						fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
 						continue
 					}
-					timing := time.Since(start)
 					allStats.Lock()
-					_ = allStats.hist.RecordValue(timing.Nanoseconds())
+					_ = allStats.hist.RecordValue(rtt.Nanoseconds())
 					allStats.Unlock()
 					if r.Rcode == dns.RcodeSuccess {
-						if r.Id != m.Id {
+						if r.ID != m.ID {
 							atomic.AddInt64(&mismatch, 1)
 							continue
 						}
@@ -192,8 +200,8 @@ func printReport(testDuration time.Duration, csv *os.File) {
 		fmt.Println()
 		fmt.Println("DNS response codes")
 		for i := dns.RcodeSuccess; i <= dns.RcodeBadCookie; i++ {
-			if c, ok := allStats.codes[i]; ok {
-				fmt.Fprint(os.Stdout, "\t", dns.RcodeToString[i]+":\t", c, "\n")
+			if c, ok := allStats.codes[uint16(i)]; ok {
+				fmt.Fprint(os.Stdout, "\t", dns.RcodeToString[uint16(i)]+":\t", c, "\n")
 			}
 		}
 	}
