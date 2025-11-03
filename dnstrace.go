@@ -32,7 +32,6 @@ var (
 	pConcurrency = flag.Uint("c", 1, "Number of concurrent queries to issue.")
 	pExpect      = flag.String("expect", "", "Expect a specific response (comma-separated).")
 	pRecurse     = flag.Bool("recurse", true, "Allow DNS recursion.")
-	pUdpSize     = flag.Uint("edns0", 0, "Enable EDNS0 with specified size.")
 	pNetwork     = flag.String("network", "udp", "tcp OR udp")
 	pVersion     = flag.Bool("version", false, "Print Version")
 	pHistMin     = flag.Duration("min", (time.Microsecond * 400), "Minimum value for timing histogram.")
@@ -73,7 +72,6 @@ func do(ctx context.Context) {
 	questions := make([]dns.Question, len(pQueries))
 	var (
 		wg sync.WaitGroup
-		id uint16
 	)
 	wg.Add(int(*pConcurrency))
 	defer func() {
@@ -90,9 +88,6 @@ func do(ctx context.Context) {
 	if !strings.Contains(srv, ":") {
 		srv += ":53"
 	}
-	var m dns.Msg
-	m.Question = make([]dns.Question, 1)
-	m.RecursionDesired = *pRecurse
 	for range *pConcurrency {
 		co, err := dns.DialTimeout(*pNetwork, srv, dnsTimeout)
 		_ = co.SetWriteDeadline(deadline)
@@ -111,16 +106,11 @@ func do(ctx context.Context) {
 				return
 			default:
 			}
-			if udpSize := uint16(*pUdpSize); udpSize > 0 {
-				m.SetEdns0(udpSize, true)
-				co.UDPSize = udpSize
-			}
 			for _, q := range questions {
-				m.Question[0] = q
+				var m dns.Msg
+				m.SetQuestion(q.Name, qType)
 				for range *pCount {
 					atomic.AddInt64(&count, 1)
-					m.Id = id
-					id++
 					start := time.Now()
 					if err = co.WriteMsg(&m); err != nil {
 						atomic.AddInt64(&ecount, 1)
