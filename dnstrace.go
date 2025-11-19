@@ -45,14 +45,14 @@ var (
 	expectedAnswerValues AnswerList
 	allStats             rstats
 
-	defaultTransport = dns.Transport{
-		Dialer: &net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 3 * time.Second,
-		},
-		ReadTimeout:  20 * time.Second,
-		WriteTimeout: 20 * time.Second,
-	}
+	// defaultTransport = dns.Transport{
+	// 	Dialer: &net.Dialer{
+	// 		Timeout:   5 * time.Second,
+	// 		KeepAlive: 3 * time.Second,
+	// 	},
+	// 	ReadTimeout:  20 * time.Second,
+	// 	WriteTimeout: 20 * time.Second,
+	// }
 )
 
 var (
@@ -82,6 +82,7 @@ func do(ctx context.Context) {
 	var (
 		wg sync.WaitGroup
 	)
+	var mux sync.Mutex
 	wg.Add(int(*pConcurrency))
 	defer func() {
 		wg.Wait()
@@ -94,18 +95,21 @@ func do(ctx context.Context) {
 	if !strings.Contains(srv, ":") {
 		srv += ":53"
 	}
+	deadline, ok := ctx.Deadline()
 	for range *pConcurrency {
-		co := dns.NewClient()
-		//co.Transport = &defaultTransport
-		conn, err := net.Dial("udp", srv)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error dialing server %s\n", srv)
-			return
-		}
 		go func() {
-			defer func() {
-				wg.Done()
-			}()
+			mux.Lock()
+			conn, err := net.Dial("udp", srv)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error dialing server %s\n", srv)
+				return
+			}
+			co := dns.WithConn(conn)
+			mux.Unlock()
+			if ok {
+				_ = conn.SetDeadline(deadline)
+			}
+			defer wg.Done()
 			select {
 			case <-ctx.Done():
 				return
@@ -113,51 +117,47 @@ func do(ctx context.Context) {
 			}
 			for _, q := range pQueries {
 				m := dns.NewMsg(q, qType)
-				// m.RecursionDesired = true
-				// m.Question = []dns.RR{&dns.A{Hdr: dns.Header{Name: q + ".", Class: qType}}}
 				for range *pCount {
-					var (
-						r   *dns.Msg
-						rtt time.Duration
-						err error
-					)
 					atomic.AddInt64(&count, 1)
-					if r, rtt, err = co.ExchangeWithConn(ctx, m, conn); err != nil {
-
-						// if err == dns.Err
-						// atomic.AddInt64(&ecount, 1)
-						// fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
-						// continue
+					if err = co.ExchangeCb(ctx, m,
+						func(ctx context.Context, m, r *dns.Msg, rtt time.Duration, err error) { //nolint: errcheck
+							if err != nil {
+								atomic.AddInt64(&ecount, 1)
+								fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
+								return
+							}
+							allStats.Lock()
+							_ = allStats.hist.RecordValue(rtt.Nanoseconds())
+							allStats.Unlock()
+							if r.Rcode == dns.RcodeSuccess {
+								if r.ID != m.ID {
+									atomic.AddInt64(&mismatch, 1)
+									return
+								}
+								atomic.AddInt64(&success, 1)
+								if *pExpect != "" {
+									if len(expectedAnswerValues) != len(r.Answer) {
+										fmt.Fprintf(os.Stdout, "expected answer count %d does not equal actual %d\n", len(expectedAnswerValues), len(r.Answer))
+										return
+									}
+									ok := expectedAnswerValues.Compare(r.Answer)
+									if ok {
+										atomic.AddInt64(&matched, 1)
+										return
+									}
+								}
+							}
+							allStats.Lock()
+							allStats.codes[r.Rcode]++
+							allStats.Unlock()
+						}); err != nil {
 						atomic.AddInt64(&ecount, 1)
-						fmt.Fprintln(os.Stderr, "i/o error reading: ", err.Error())
+						fmt.Fprintln(os.Stderr, "i/o error writing: ", err.Error())
 						continue
 					}
-					allStats.Lock()
-					_ = allStats.hist.RecordValue(rtt.Nanoseconds())
-					allStats.Unlock()
-					if r.Rcode == dns.RcodeSuccess {
-						if r.ID != m.ID {
-							atomic.AddInt64(&mismatch, 1)
-							continue
-						}
-						atomic.AddInt64(&success, 1)
-						if *pExpect != "" {
-							if len(expectedAnswerValues) != len(r.Answer) {
-								fmt.Fprintf(os.Stdout, "expected answer count %d does not equal actual %d\n", len(expectedAnswerValues), len(r.Answer))
-								continue
-							}
-							ok := expectedAnswerValues.Compare(r.Answer)
-							if ok {
-								atomic.AddInt64(&matched, 1)
-								break
-							}
-						}
-					}
-					allStats.Lock()
-					allStats.codes[r.Rcode]++
-					allStats.Unlock()
 				}
 			}
+			conn.Close()
 		}()
 	}
 }

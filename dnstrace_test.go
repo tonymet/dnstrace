@@ -18,7 +18,7 @@ func init() {
 
 func startTestDNSServer() {
 	dns.HandleFunc(".", handleDNSRequest)
-	udpServer := &dns.Server{Addr: serverAddr, Net: "udp", ReusePort: true, MaxTCPQueries: -1}
+	udpServer := &dns.Server{Addr: serverAddr, Net: "udp", ReuseAddr: false, ReusePort: false}
 	go func() {
 		if err := udpServer.ListenAndServe(); err != nil {
 			log.Printf("Failed to setup the server: %s", err.Error())
@@ -30,6 +30,7 @@ func startTestDNSServer() {
 func handleDNSRequest(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	r.Response = true
+	m.ID = r.ID
 	if r.Opcode == dns.OpcodeQuery {
 		for _, q := range r.Question {
 			switch dns.RRToType(q) {

@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../dns2"
+		}
+	],
+	"settings": {}
+}
